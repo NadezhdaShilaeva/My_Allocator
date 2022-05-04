@@ -2,71 +2,86 @@
 #include <cstdlib>
 #include <cstdarg>
 
-template<typename T>
 struct memory_chunk
 {
-	T* memory = nullptr;
-	memory_chunk<T>* next_mem = nullptr;
+	size_t size_mem = 0;
+	void *memory = nullptr;
+	memory_chunk *next_mem = nullptr;
 };
 
-template<typename T>
 struct memory_blocks
 {
-	void insert(T* memory)
-	{
-		memory_chunk<T>* new_mem = free_node;
-		free_node = free_node->next_mem;
-		new_mem->next_mem = first_mem;
-		new_mem->memory = memory;
-		first_mem = new_mem;
-	}
-
-	T* get()
-	{
-		if (first_mem == nullptr)
-		{
-			return nullptr;
-		}
-
-		T* memory = first_mem->memory;
-		memory_chunk<T>* mem_chunk = first_mem;
-		first_mem = first_mem->next_mem;
-		if (free_node == nullptr)
-		{
-			free_node = mem_chunk;
-		}
-		else
-		{
-			mem_chunk->next_mem = free_node;
-			free_node = mem_chunk;
-		}
-		free_node->memory = nullptr;
-
-		return memory;
-	}
-
-	size_t size_mem;
-	memory_chunk<T>* first_mem = nullptr;
-	memory_chunk<T>* free_node = nullptr;
+	size_t size_mem = 0;
+	memory_chunk *first_mem = nullptr;
 };
 
+void *get(memory_blocks &memory_list, memory_chunk *&free_block)
+{
+	if (memory_list.first_mem == nullptr)
+	{
+		return nullptr;
+	}
 
-template<typename T, int... Args>
+	void *memory = memory_list.first_mem->memory;
+
+	memory_chunk *mem_chunk = memory_list.first_mem;
+	memory_list.first_mem = memory_list.first_mem->next_mem;
+
+	mem_chunk->next_mem = free_block;
+	free_block = mem_chunk;
+
+	return memory;
+}
+
+void insert(void *memory, memory_chunk *&free_block, size_t count_memory_lists, memory_blocks *&memory_lists)
+{
+	memory_chunk *free_chunk = free_block;
+	while (free_chunk->memory != memory)
+	{
+		free_chunk = free_chunk->next_mem;
+	}
+
+	for (int i = 0; i < count_memory_lists; ++i)
+	{
+		if (memory_lists[i].size_mem == free_chunk->size_mem)
+		{
+			memory_chunk **new_chunk = &free_block;
+			if ((*new_chunk)->memory == free_chunk->memory)
+			{
+				free_block = free_block->next_mem;
+			}
+			else
+			{
+				while ((*new_chunk)->next_mem->memory != free_chunk->memory)
+				{
+					new_chunk = &((*new_chunk)->next_mem);
+				}
+				(*new_chunk)->next_mem = (*new_chunk)->next_mem->next_mem;
+			}
+
+			free_chunk->next_mem = memory_lists[i].first_mem;
+			memory_lists[i].first_mem = free_chunk;
+
+			return;
+		}
+	}
+}
+
+template <typename T, int... Args>
 class CMyallocator
 {
 public:
-	using type = T;
-	using value_type = T;
-	using pointer = T*;
-	using const_pointer = const T*;
-	using reference = T&;
-	using const_reference = const T&;
-	using size_type = size_t;
-	using difference_type = ptrdiff_t;
+	typedef size_t size_type;
+	typedef ptrdiff_t difference_type;
+	typedef T *pointer;
+	typedef const T *const_pointer;
+	typedef T &reference;
+	typedef const T &const_reference;
+	typedef T value_type;
 
 	CMyallocator()
 	{
-		int args[sizeof...(Args)] = { Args... };
+		int args[sizeof...(Args)] = {Args...};
 		construct_lists(sizeof...(Args), args);
 		construct_blocks(sizeof...(Args), args);
 	}
@@ -77,37 +92,63 @@ public:
 		memory_pool_ = nullptr;
 	}
 
+	template <typename U>
+	struct rebind
+	{
+		typedef CMyallocator<U, Args...> other;
+	};
+
+	CMyallocator(const CMyallocator &other)
+		: memory_pool_(other.memory_pool_), size_memory_pool_(other.size_memory_pool_), count_memory_lists_(other.count_memory_lists_), memory_lists_(other.memory_lists_) {}
+
+	template <typename U>
+	CMyallocator(const CMyallocator<U, Args...> &other)
+		: memory_pool_(other.memory_pool_), size_memory_pool_(other.size_memory_pool_), count_memory_lists_(other.count_memory_lists_), memory_lists_(other.memory_lists_) {}
+
 	pointer allocate(size_type n)
 	{
+		std::cout << "alloc " << n * sizeof(value_type) << "\n";
+
 		for (int i = 0; i < count_memory_lists_; ++i)
 		{
-			if (memory_lists_[i].size_mem == n)
+			if (memory_lists_[i].size_mem >= n * sizeof(value_type))
 			{
-				pointer mem = memory_lists_[i].get();
+				pointer mem = static_cast<pointer>(get(memory_lists_[i], free_blocks_));
 				if (mem != nullptr)
 				{
 					return mem;
 				}
 			}
 		}
-		
+
 		throw std::bad_alloc();
 	}
 
 	void deallocate(pointer p, size_type n)
 	{
-		if (p < memory_pool_ || p >= memory_pool_ + size_memory_pool_)
+		std::cout << "dealloc " << n * sizeof(value_type) << "\n";
+
+		insert(static_cast<void *>(p), free_blocks_, count_memory_lists_, memory_lists_);
+		/*for (int i = 0; i < count_memory_lists_; ++i)
 		{
-			// error
-		}
-		for (int i = 0; i < count_memory_lists_; ++i)
-		{
-			if (memory_lists_[i].size_mem == n)
+			if (memory_lists_[i].size_mem == sizeof(value_type))
 			{
-				memory_lists_[i].insert(p);
+				memory_lists_[i].insert(static_cast<void *>(p));
 				return;
 			}
-		}
+		}*/
+	}
+
+	template <typename U, typename... Argss>
+	void construct(U *p, Argss &&...argss)
+	{
+		new (reinterpret_cast<void *>(p)) U{std::forward<Argss>(argss)...};
+	}
+
+	template <typename U>
+	void destroy(U *p)
+	{
+		p->~U();
 	}
 
 private:
@@ -120,7 +161,7 @@ private:
 		{
 			if (i % 2 == 0)
 			{
-				size_chunk = args[i] / sizeof(T);
+				size_chunk = args[i];
 			}
 			else
 			{
@@ -128,13 +169,14 @@ private:
 			}
 		}
 
-		memory_pool_ = static_cast<pointer>(std::malloc(size_memory * sizeof(T)));
+		memory_pool_ = std::malloc(size_memory);
 		size_memory_pool_ = size_memory;
-		memory_lists_ = new memory_blocks<T>[cnt / 2];
+
+		memory_lists_ = new memory_blocks[cnt / 2];
 		count_memory_lists_ = cnt / 2;
 	}
 
-	void construct_blocks(int cnt, int args[]) 
+	void construct_blocks(int cnt, int args[])
 	{
 		size_t size_chunk;
 		size_t memory_offset = 0;
@@ -143,33 +185,52 @@ private:
 		{
 			if (i % 2 == 0)
 			{
-				size_chunk = args[i] / sizeof(T);
+				size_chunk = args[i];
 			}
 			else
 			{
 				memory_lists_[i / 2].size_mem = size_chunk;
-				memory_chunk<T>* first_mem = new memory_chunk<T>;
+
+				memory_chunk *first_mem = new memory_chunk;
 				first_mem->next_mem = nullptr;
-				first_mem->memory = memory_pool_ + memory_offset;
+				first_mem->size_mem = size_chunk;
+				first_mem->memory = static_cast<void *>(static_cast<char *>(memory_pool_) + memory_offset);
 				memory_lists_[i / 2].first_mem = first_mem;
-				memory_chunk<T>* pred_mem = first_mem;
+				memory_chunk *pred_mem = first_mem;
 				memory_offset += size_chunk;
-				for (int j = 0; j < args[i]; ++j)
+
+				for (int j = 1; j < args[i]; ++j)
 				{
-					memory_chunk<T>* new_mem = new memory_chunk<T>;
+					memory_chunk *new_mem = new memory_chunk;
 					new_mem->next_mem = nullptr;
-					new_mem->memory = memory_pool_ + memory_offset;
+					new_mem->size_mem = size_chunk;
+					new_mem->memory = static_cast<void *>(static_cast<char *>(memory_pool_) + memory_offset);
 					pred_mem->next_mem = new_mem;
 					pred_mem = new_mem;
-					memory_offset += size_chunk / sizeof(T);
+					memory_offset += size_chunk;
 				}
 			}
 		}
+
+		free_blocks_ = nullptr;
 	}
 
-private:
-	T* memory_pool_;
+public:
+	void *memory_pool_;
 	size_t size_memory_pool_;
 	size_t count_memory_lists_;
-	memory_blocks<T>* memory_lists_;
+	memory_blocks *memory_lists_;
+	memory_chunk *free_blocks_;
 };
+
+template <typename T, typename U, int... Args>
+bool operator==(const CMyallocator<T, Args...> &, const CMyallocator<U, Args...> &)
+{
+	return true;
+}
+
+template <class T, class U, int... Args>
+bool operator!=(const CMyallocator<T, Args...> &, const CMyallocator<U, Args...> &)
+{
+	return false;
+}
