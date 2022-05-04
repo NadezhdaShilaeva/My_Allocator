@@ -1,6 +1,5 @@
 #include <iostream>
 #include <cstdlib>
-#include <cstdarg>
 
 struct memory_chunk
 {
@@ -67,6 +66,16 @@ void insert(void *memory, memory_chunk *&free_block, size_t count_memory_lists, 
 	}
 }
 
+void delete_chunks(memory_chunk *mem_chunk)
+{
+	if (mem_chunk == nullptr)
+	{
+		return;
+	}
+	delete_chunks(mem_chunk->next_mem);
+	delete mem_chunk;
+}
+
 template <typename T, int... Args>
 class CMyallocator
 {
@@ -88,8 +97,61 @@ public:
 
 	~CMyallocator()
 	{
-		std::free(memory_pool_);
+		if (memory_pool_ != nullptr)
+			std::free(memory_pool_);
 		memory_pool_ = nullptr;
+
+		delete_chunks(free_blocks_);
+		free_blocks_ = nullptr;
+
+		for (int i = 0; i < count_memory_lists_; ++i)
+		{
+			delete_chunks(memory_lists_[i].first_mem);
+		}
+		delete[] memory_lists_;
+	}
+
+	CMyallocator(const CMyallocator<T, Args...> &other)
+	{
+		size_memory_pool_ = other.size_memory_pool_;
+		memory_pool_ = std::malloc(size_memory_pool_);
+
+		count_memory_lists_ = other.count_memory_lists_;
+		memory_lists_ = new memory_blocks[count_memory_lists_];
+
+		size_t memory_offset = 0;
+
+		for (int i = 0; i < count_memory_lists_; ++i)
+		{
+			memory_lists_[i].size_mem = other.memory_lists_[i].size_mem;
+			memory_lists_[i].first_mem = nullptr;
+			memory_chunk *next_mem = other.memory_lists_[i].first_mem;
+
+			while (next_mem != nullptr)
+			{
+				memory_chunk *new_mem = new memory_chunk;
+				new_mem->size_mem = next_mem->size_mem;
+				new_mem->memory = static_cast<void *>(static_cast<char *>(memory_pool_) + memory_offset);
+				new_mem->next_mem = memory_lists_[i].first_mem;
+				memory_lists_[i].first_mem = new_mem;
+				memory_offset += new_mem->size_mem;
+				next_mem = next_mem->next_mem;
+			}
+		}
+
+		free_blocks_ = nullptr;
+		memory_chunk *next_mem = other.free_blocks_;
+
+		while (next_mem != nullptr)
+		{
+			memory_chunk *new_mem = new memory_chunk;
+			new_mem->size_mem = next_mem->size_mem;
+			new_mem->memory = static_cast<void *>(static_cast<char *>(memory_pool_) + memory_offset);
+			new_mem->next_mem = free_blocks_;
+			free_blocks_ = new_mem;
+			memory_offset += new_mem->size_mem;
+			next_mem = next_mem->next_mem;
+		}
 	}
 
 	template <typename U>
@@ -98,17 +160,8 @@ public:
 		typedef CMyallocator<U, Args...> other;
 	};
 
-	CMyallocator(const CMyallocator &other)
-		: memory_pool_(other.memory_pool_), size_memory_pool_(other.size_memory_pool_), count_memory_lists_(other.count_memory_lists_), memory_lists_(other.memory_lists_) {}
-
-	template <typename U>
-	CMyallocator(const CMyallocator<U, Args...> &other)
-		: memory_pool_(other.memory_pool_), size_memory_pool_(other.size_memory_pool_), count_memory_lists_(other.count_memory_lists_), memory_lists_(other.memory_lists_) {}
-
 	pointer allocate(size_type n)
 	{
-		std::cout << "alloc " << n * sizeof(value_type) << "\n";
-
 		for (int i = 0; i < count_memory_lists_; ++i)
 		{
 			if (memory_lists_[i].size_mem >= n * sizeof(value_type))
@@ -126,17 +179,7 @@ public:
 
 	void deallocate(pointer p, size_type n)
 	{
-		std::cout << "dealloc " << n * sizeof(value_type) << "\n";
-
 		insert(static_cast<void *>(p), free_blocks_, count_memory_lists_, memory_lists_);
-		/*for (int i = 0; i < count_memory_lists_; ++i)
-		{
-			if (memory_lists_[i].size_mem == sizeof(value_type))
-			{
-				memory_lists_[i].insert(static_cast<void *>(p));
-				return;
-			}
-		}*/
 	}
 
 	template <typename U, typename... Argss>
@@ -190,23 +233,15 @@ private:
 			else
 			{
 				memory_lists_[i / 2].size_mem = size_chunk;
+				memory_lists_[i / 2].first_mem = nullptr;
 
-				memory_chunk *first_mem = new memory_chunk;
-				first_mem->next_mem = nullptr;
-				first_mem->size_mem = size_chunk;
-				first_mem->memory = static_cast<void *>(static_cast<char *>(memory_pool_) + memory_offset);
-				memory_lists_[i / 2].first_mem = first_mem;
-				memory_chunk *pred_mem = first_mem;
-				memory_offset += size_chunk;
-
-				for (int j = 1; j < args[i]; ++j)
+				for (int j = 0; j < args[i]; ++j)
 				{
 					memory_chunk *new_mem = new memory_chunk;
-					new_mem->next_mem = nullptr;
 					new_mem->size_mem = size_chunk;
 					new_mem->memory = static_cast<void *>(static_cast<char *>(memory_pool_) + memory_offset);
-					pred_mem->next_mem = new_mem;
-					pred_mem = new_mem;
+					new_mem->next_mem = memory_lists_[i / 2].first_mem;
+					memory_lists_[i / 2].first_mem = new_mem;
 					memory_offset += size_chunk;
 				}
 			}
